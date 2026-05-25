@@ -1,0 +1,8 @@
+node_modules/
+vendor/
+assets/dist/
+plugin/
+.DS_Store
+Thumbs.db
+*.log
+.vite/

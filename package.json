@@ -1,0 +1,21 @@
+{
+    "name": "acceleratewp-debugger",
+    "version": "1.0.1",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "npm run build:shared && npm run build:admin",
+        "build:shared": "vite build --config vite.config.shared.ts",
+        "build:admin": "vite build --config vite.config.admin.ts",
+        "watch:admin": "vite build --config vite.config.admin.ts --watch",
+        "check": "svelte-check --tsconfig ./tsconfig.json"
+    },
+    "devDependencies": {
+        "@sveltejs/vite-plugin-svelte": "^4.0.0",
+        "@tsconfig/svelte": "^5.0.4",
+        "svelte": "^5.0.0",
+        "svelte-check": "^4.0.0",
+        "typescript": "^5.5.0",
+        "vite": "^5.4.0"
+    }
+}

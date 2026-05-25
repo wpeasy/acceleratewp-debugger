@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git ls-remote *)",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "PowerShell(& .\\\\create-plugin-zip.ps1)",
+      "PowerShell($zip = [System.IO.Compression.ZipFile]::OpenRead\\('plugin\\\\acceleratewp-debugger-1.0.1.zip'\\); $zip.Entries | Select-Object FullName, Length | Format-Table -AutoSize; $zip.Dispose\\(\\))",
+      "Bash(git add *)"
+    ]
+  }
+}
