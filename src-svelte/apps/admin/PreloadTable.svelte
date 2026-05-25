@@ -18,6 +18,17 @@
         percent_complete: number;
     }
 
+    interface Cron {
+        hook: string;
+        hook_registered: boolean;
+        scheduled: boolean;
+        next_run: number | null;
+        server_time: number;
+        is_processing: boolean;
+        source: 'action_scheduler' | 'wp_cron' | 'none';
+        pending_actions: number;
+    }
+
     interface PreloadResponse {
         success: boolean;
         items: PreloadRow[];
@@ -26,6 +37,7 @@
         per_page: number;
         total_pages: number;
         summary: Summary;
+        cron: Cron;
         error?: string;
     }
 
@@ -39,6 +51,7 @@
     type SortOrder = 'asc' | 'desc';
 
     const PER_PAGE = 50;
+    const POLL_INTERVAL_MS = 5000;
 
     let search = $state('');
     let statusFilter = $state('');
@@ -55,6 +68,16 @@
         total: 0,
         percent_complete: 0,
     });
+    let cron = $state<Cron>({
+        hook: '',
+        hook_registered: false,
+        scheduled: false,
+        next_run: null,
+        server_time: 0,
+        is_processing: false,
+        source: 'none',
+        pending_actions: 0,
+    });
     let total = $state(0);
     let totalPages = $state(0);
     let loading = $state(false);
@@ -63,7 +86,55 @@
     let runningCron = $state(false);
     let rebuildingUrl = $state<string | null>(null);
 
+    let nowSec = $state(Math.floor(Date.now() / 1000));
+    let localFetchTime = $state(Math.floor(Date.now() / 1000));
+
+    const cronSecondsUntil = $derived(
+        cron.next_run !== null
+            ? cron.next_run - cron.server_time + localFetchTime - nowSec
+            : null
+    );
+
+    function formatCountdown(secs: number): string {
+        if (secs <= 0) {
+            return 'due now';
+        }
+        if (secs < 60) {
+            return `in ${secs}s`;
+        }
+        if (secs < 3600) {
+            const m = Math.floor(secs / 60);
+            const s = secs % 60;
+            return s > 0 ? `in ${m}m ${s}s` : `in ${m}m`;
+        }
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        return m > 0 ? `in ${h}h ${m}m` : `in ${h}h`;
+    }
+
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let tickTimer: ReturnType<typeof setInterval> | null = null;
+
+    function clearPoll(): void {
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    function schedulePoll(): void {
+        clearPoll();
+        const activeWork = summary.pending + summary['in-progress'];
+        const cronImminent =
+            cron.scheduled && cronSecondsUntil !== null && cronSecondsUntil < 60;
+        if (activeWork > 0 || cronImminent) {
+            pollTimer = setTimeout(() => {
+                pollTimer = null;
+                void load();
+            }, POLL_INTERVAL_MS);
+        }
+    }
 
     async function load(): Promise<void> {
         loading = true;
@@ -87,6 +158,10 @@
                 total = res.total;
                 totalPages = res.total_pages;
                 summary = res.summary;
+                if (res.cron) {
+                    cron = res.cron;
+                    localFetchTime = Math.floor(Date.now() / 1000);
+                }
             }
         } catch (err) {
             errorMessage = err instanceof Error ? err.message : 'Request failed.';
@@ -96,6 +171,7 @@
         } finally {
             loading = false;
         }
+        schedulePoll();
     }
 
     function scheduleSearch(): void {
@@ -182,6 +258,16 @@
 
     onMount(() => {
         void load();
+        tickTimer = setInterval(() => {
+            nowSec = Math.floor(Date.now() / 1000);
+        }, 1000);
+        return () => {
+            clearPoll();
+            if (tickTimer) {
+                clearInterval(tickTimer);
+                tickTimer = null;
+            }
+        };
     });
 </script>
 
@@ -198,14 +284,34 @@
                 <span class="awpd-pill awpd-pill--total">{summary.total} Total</span>
             </span>
         </div>
-        <button
-            type="button"
-            class="button button-primary"
-            onclick={runCron}
-            disabled={runningCron}
-        >
-            {runningCron ? 'Running…' : 'Run Cron'}
-        </button>
+        <div class="awpd-cron">
+            {#if cron.is_processing}
+                <span class="awpd-cron__pill awpd-cron__pill--running" title="At least one URL has status in-progress in the cache table">
+                    <span class="awpd-cron__dot"></span> Processing
+                    {#if cron.pending_actions > 0}<span class="awpd-cron__count">· {cron.pending_actions} queued</span>{/if}
+                </span>
+            {:else if cron.scheduled && cronSecondsUntil !== null}
+                <span class="awpd-cron__pill awpd-cron__pill--scheduled" title="Action Scheduler group: rocket-preload · hook: {cron.hook}">
+                    {cron.pending_actions} queued · next {formatCountdown(cronSecondsUntil)}
+                </span>
+            {:else if !cron.hook_registered}
+                <span class="awpd-cron__pill awpd-cron__pill--warn" title="No PHP callback registered for {cron.hook} — AccelerateWP / WP Rocket not active?">
+                    Hook not registered
+                </span>
+            {:else}
+                <span class="awpd-cron__pill awpd-cron__pill--idle" title="Hook registered but no Action Scheduler actions are pending in the rocket-preload group">
+                    Idle
+                </span>
+            {/if}
+            <button
+                type="button"
+                class="button button-primary"
+                onclick={runCron}
+                disabled={runningCron}
+            >
+                {runningCron ? 'Running…' : 'Run Cron'}
+            </button>
+        </div>
     </header>
 
     {#if notice}
@@ -462,5 +568,65 @@
 
     .awpd-pagination__status {
         color: #646970;
+    }
+
+    .awpd-cron {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+
+    .awpd-cron__pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.25rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        background: #e9ecef;
+        color: #495057;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .awpd-cron__pill--running {
+        background: #cfe2ff;
+        color: #084298;
+    }
+
+    .awpd-cron__pill--scheduled {
+        background: #d1e7dd;
+        color: #0f5132;
+    }
+
+    .awpd-cron__pill--idle {
+        background: #e9ecef;
+        color: #495057;
+    }
+
+    .awpd-cron__pill--warn {
+        background: #f8d7da;
+        color: #842029;
+    }
+
+    .awpd-cron__count {
+        opacity: 0.85;
+        font-weight: 500;
+    }
+
+    .awpd-cron__dot {
+        display: inline-block;
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: #0a7d2e;
+        animation: awpd-pulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes awpd-pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.35; transform: scale(0.8); }
     }
 </style>

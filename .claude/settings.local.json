@@ -9,7 +9,9 @@
       "Bash(npm run *)",
       "PowerShell(& .\\\\create-plugin-zip.ps1)",
       "PowerShell($zip = [System.IO.Compression.ZipFile]::OpenRead\\('plugin\\\\acceleratewp-debugger-1.0.1.zip'\\); $zip.Entries | Select-Object FullName, Length | Format-Table -AutoSize; $zip.Dispose\\(\\))",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }

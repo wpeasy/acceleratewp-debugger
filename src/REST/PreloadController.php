@@ -24,7 +24,8 @@ final class PreloadController {
 
     private const REST_NAMESPACE   = 'awpd/v1';
     private const TABLE_SUFFIX     = 'wpr_rocket_cache';
-    private const CRON_HOOK        = 'rocket_preload_process_pending_jobs';
+    private const CRON_HOOK        = 'rocket_preload_job_preload_url';
+    private const AS_GROUP         = 'rocket-preload';
     private const ALLOWED_STATUSES = ['completed', 'in-progress', 'failed', 'pending'];
     private const ALLOWED_SORT     = ['url', 'modified', 'last_accessed', 'status', 'id'];
     private const MAX_PER_PAGE     = 500;
@@ -83,6 +84,7 @@ final class PreloadController {
                 'per_page'    => 0,
                 'total_pages' => 0,
                 'summary'     => self::empty_summary(),
+                'cron'        => self::get_cron_status(self::empty_summary()),
             ]);
         }
 
@@ -127,6 +129,8 @@ final class PreloadController {
         $row_params = array_merge($where_params, [$per_page, $offset]);
         $rows       = $wpdb->get_results($wpdb->prepare($sql_rows, ...$row_params), ARRAY_A);
 
+        $summary = self::compute_summary($table);
+
         return rest_ensure_response([
             'success'     => true,
             'items'       => array_map([self::class, 'format_row'], is_array($rows) ? $rows : []),
@@ -134,34 +138,53 @@ final class PreloadController {
             'page'        => $page,
             'per_page'    => $per_page,
             'total_pages' => $total > 0 ? (int) ceil($total / $per_page) : 0,
-            'summary'     => self::compute_summary($table),
+            'summary'     => $summary,
+            'cron'        => self::get_cron_status($summary),
         ]);
     }
 
     public static function run_cron(WP_REST_Request $request): WP_REST_Response {
         unset($request);
 
-        if (has_action(self::CRON_HOOK)) {
-            do_action(self::CRON_HOOK);
+        // Preferred path: trigger Action Scheduler's queue runner, which is what
+        // AccelerateWP's preloader actually uses. Processes one batch (default 25).
+        if (
+            class_exists('\\ActionScheduler_QueueRunner')
+            || function_exists('as_get_scheduled_actions')
+        ) {
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(60);
+            }
+            $start = microtime(true);
+            do_action('action_scheduler_run_queue', 'AWPD Debugger');
+            $elapsed = round(microtime(true) - $start, 2);
+
             return rest_ensure_response([
                 'success' => true,
-                'message' => __('Preload cron triggered.', 'acceleratewp-debugger'),
-                'hook'    => self::CRON_HOOK,
+                'message' => sprintf(
+                    /* translators: %s: elapsed seconds */
+                    __('Action Scheduler queue run dispatched (%ss). Process is up to one batch of actions.', 'acceleratewp-debugger'),
+                    $elapsed
+                ),
+                'hook'    => 'action_scheduler_run_queue',
+                'source'  => 'action_scheduler',
             ]);
         }
 
+        // Fallback: plain wp-cron sweep.
         if (function_exists('spawn_cron')) {
             spawn_cron();
             return rest_ensure_response([
                 'success' => true,
-                'message' => __('Preload hook not registered; spawned wp-cron sweep.', 'acceleratewp-debugger'),
+                'message' => __('Action Scheduler not detected; spawned wp-cron sweep.', 'acceleratewp-debugger'),
                 'hook'    => 'wp-cron',
+                'source'  => 'wp_cron',
             ]);
         }
 
         return new WP_REST_Response([
             'success' => false,
-            'error'   => __('Could not trigger preload cron.', 'acceleratewp-debugger'),
+            'error'   => __('Could not trigger cron.', 'acceleratewp-debugger'),
         ], 500);
     }
 
@@ -220,6 +243,59 @@ final class PreloadController {
         global $wpdb;
         $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
         return $found === $table;
+    }
+
+    /**
+     * @param array{completed:int,pending:int,in-progress:int,failed:int,total:int,percent_complete:int} $summary
+     * @return array{hook:string,hook_registered:bool,scheduled:bool,next_run:int|null,server_time:int,is_processing:bool,source:string,pending_actions:int}
+     */
+    private static function get_cron_status(array $summary): array {
+        global $wpdb;
+
+        $pending_actions = 0;
+        $next_run        = null;
+        $source          = 'none';
+        $hook_registered = (bool) has_action(self::CRON_HOOK);
+
+        $as_actions = $wpdb->prefix . 'actionscheduler_actions';
+        $as_groups  = $wpdb->prefix . 'actionscheduler_groups';
+
+        if (self::table_exists($as_actions) && self::table_exists($as_groups)) {
+            $source = 'action_scheduler';
+
+            $row = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT COUNT(*) AS cnt, MIN(a.scheduled_date_gmt) AS earliest
+                     FROM {$as_actions} a
+                     INNER JOIN {$as_groups} g ON a.group_id = g.group_id
+                     WHERE g.slug = %s AND a.status = %s",
+                    self::AS_GROUP,
+                    'pending'
+                ),
+                ARRAY_A
+            );
+
+            if (is_array($row)) {
+                $pending_actions = (int) ($row['cnt'] ?? 0);
+                if (!empty($row['earliest']) && $row['earliest'] !== '0000-00-00 00:00:00') {
+                    $ts = strtotime($row['earliest'] . ' GMT');
+                    if ($ts !== false) {
+                        $next_run = $ts;
+                    }
+                }
+            }
+        }
+
+        return [
+            'hook'            => self::CRON_HOOK,
+            'hook_registered' => $hook_registered,
+            'scheduled'       => $pending_actions > 0,
+            'next_run'        => $next_run,
+            'server_time'     => time(),
+            'is_processing'   => $summary['in-progress'] > 0,
+            'source'          => $source,
+            'pending_actions' => $pending_actions,
+        ];
     }
 
     /**

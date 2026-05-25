@@ -26,21 +26,20 @@ final class Assets {
             return;
         }
 
-        $version = AWPD_VERSION;
-        $base    = AWPD_PLUGIN_URL;
+        $base = AWPD_PLUGIN_URL;
 
         wp_enqueue_script(
             'awpd-shared',
             $base . 'assets/dist/shared.js',
             [],
-            $version,
+            self::asset_version('assets/dist/shared.js'),
             false
         );
 
         $data = [
             'apiUrl'  => esc_url_raw(rest_url('awpd/v1')),
             'nonce'   => wp_create_nonce('wp_rest'),
-            'version' => $version,
+            'version' => AWPD_VERSION,
             'homeUrl' => esc_url_raw(home_url('/')),
         ];
 
@@ -54,14 +53,29 @@ final class Assets {
             'awpd-admin',
             $base . 'assets/dist/admin/main.js',
             [],
-            $version
+            self::asset_version('assets/dist/admin/main.js')
         );
 
         wp_enqueue_style(
             'awpd-admin',
             $base . 'assets/dist/admin/style.css',
             [],
-            $version
+            self::asset_version('assets/dist/admin/style.css')
         );
+    }
+
+    /**
+     * Use the built file's mtime so each rebuild busts the browser cache.
+     * Falls back to the plugin version if the file is missing.
+     */
+    private static function asset_version(string $relative_path): string {
+        $absolute = AWPD_PLUGIN_DIR . $relative_path;
+        if (file_exists($absolute)) {
+            $mtime = filemtime($absolute);
+            if ($mtime !== false) {
+                return (string) $mtime;
+            }
+        }
+        return AWPD_VERSION;
     }
 }
